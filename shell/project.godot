@@ -1,0 +1,15 @@
+config_version=5
+
+[application]
+
+config/name="植物大战僵尸杂交版"
+config/version="0.30.0.0"
+config/features=PackedStringArray("4.7", "C#", "Forward Plus")
+
+[dotnet]
+
+project/assembly_name="PlantsVsZombies"
+
+[rendering]
+
+textures/vram_compression/import_etc2_astc=true
