@@ -3,13 +3,19 @@
 
 check version API → bilibili post → Quark share → save to user's Quark drive → download via OpenList →
 extract → preflight → generate Godot shell project → export macOS + Linux → Linux smoke test + arm64 load test
-→ assemble/sign/package → publish to ~/pvzhe/out.
+→ assemble/sign/package → publish to ~/pvzhe/out → (optional) GitHub release.
 
 Usage:
   autoupdate.py                    # normal (cron) run: does nothing if already built the latest version
   autoupdate.py --force            # rebuild even if version unchanged
   autoupdate.py --game-dir DIR     # skip download, build from an extracted Windows build
   autoupdate.py --no-publish       # build + test, but don't touch ~/pvzhe/out
+  autoupdate.py --github-repo OWNER/NAME
+                                   # also publish each newly built version as a GitHub release of OWNER/NAME
+                                   # (this script's own checkout must be a clone of it; uses the gh CLI login)
+
+Code (pe_anycpu.py, loadtest/) is taken from the checkout this script lives in; runtime data (state, tmp, builds)
+lives in $PVZHE_WORK (default ~/pvzhe/work).
 """
 import argparse
 import datetime
@@ -27,11 +33,12 @@ import time
 import urllib.request
 import zipfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import pvzhe_net as net  # noqa: E402
 
 HOME = os.path.expanduser("~")
-WORK = f"{HOME}/pvzhe/work"
+REPO_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))   # checkout holding this script
+WORK = os.environ.get("PVZHE_WORK", f"{HOME}/pvzhe/work")
 TOOLS = f"{HOME}/pvzhe/tools"
 OUT = f"{HOME}/pvzhe/out"
 AU = f"{WORK}/autoupdate"
@@ -439,7 +446,7 @@ def linux_smoke_test(info, build_dir, patched_dll, shots_dir):
 
 
 def arm64_load_test(info, patched_dll, mac_arm64_dir):
-    lt = f"{WORK}/loadtest"
+    lt = f"{REPO_DIR}/loadtest"
     out = f"{lt}/out_{info['tfm']}"
     run([f"{DOTNET_DIR}/dotnet", "build", lt, "-c", "Release", f"-p:TargetFramework={info['tfm']}", "-o", out],
         stdout=subprocess.DEVNULL)
@@ -484,7 +491,7 @@ def build(info, version, publish):
     log("exported Linux + macOS shells")
 
     patched = f"{bdir}/{info['asm']}.dll"
-    run(["python3", "-I", f"{WORK}/pe_anycpu.py", info["dll"], patched], stdout=subprocess.DEVNULL)
+    run(["python3", "-I", f"{REPO_DIR}/pe_anycpu.py", info["dll"], patched], stdout=subprocess.DEVNULL)
     if open(info["dll"], "rb").read()[512:] != open(patched, "rb").read()[512:]:
         raise RuntimeError("PE patch touched bytes beyond the header")
 
@@ -553,6 +560,228 @@ def build(info, version, publish):
     return {"sha256": sha, "package": pkg, "smoke": smoke}
 
 
+# ---------------------------------------------------------------- GitHub release
+
+DEFAULT_APP_NAME = "植物大战僵尸杂交版"
+MACOS_NAMES = {"12": "Monterey", "13": "Ventura", "14": "Sonoma", "15": "Sequoia", "26": "Tahoe"}
+
+
+def display_version(version):
+    """0.30.0.0 -> 0.30, 0.31.1.0 -> 0.31.1 (as used in asset names and titles)."""
+    parts = version.split(".")
+    while len(parts) > 2 and parts[-1] == "0":
+        parts.pop()
+    return ".".join(parts)
+
+
+def asset_name(version):
+    return f"PvZ-Hybrid-{display_version(version)}-macOS-Universal.tar.gz"
+
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def sh(cmd, label=None, **kw):
+    """Run git/gh, returning stdout; on failure raise with stderr so the reason shows up in the logs."""
+    r = run(cmd, capture_output=True, text=True, check=False, **kw)
+    if r.returncode != 0:
+        raise RuntimeError(f"{label or ' '.join(cmd[:3])} failed ({r.returncode}): "
+                           f"{(r.stderr or r.stdout).strip()[-300:]}")
+    return r.stdout.strip()
+
+
+def git(*args, **kw):
+    kw.setdefault("env", dict(ENV, TZ="UTC"))
+    return sh(["git", "-C", REPO_DIR, *args], label=f"git {args[0]}", **kw)
+
+
+def update_readme(version, asset):
+    """Point README.md at the new version and asset name. Returns True if the file changed."""
+    p = f"{REPO_DIR}/README.md"
+    s = open(p, encoding="utf-8").read()
+    new, n1 = re.subn(r"(当前版本：\*\*)[0-9.]+(\*\*)", rf"\g<1>{version}\g<2>", s)
+    new, n2 = re.subn(r"(native macOS build of PvZ Hybrid \*\*)[0-9.]+(\*\*)", rf"\g<1>{version}\g<2>", new)
+    if n1 != 1 or n2 != 1:
+        raise RuntimeError("README.md version lines not found (format changed?)")
+    new = re.sub(r"PvZ-Hybrid-[0-9.]+-macOS-Universal\.tar\.gz", asset, new)
+    if new == s:
+        return False
+    open(p, "w", encoding="utf-8").write(new)
+    return True
+
+
+def release_notes(repo, version, asset, sha, app_name):
+    dv = display_version(version)
+    major = MIN_MACOS.split(".")[0]
+    macos = f"macOS {major}" + (f" ({MACOS_NAMES[major]})" if major in MACOS_NAMES else "")
+    app = f"/Applications/{app_name}.app"
+    return f"""植物大战僵尸杂交版 **{version}** 的 macOS 原生版（非官方移植）。Universal（Apple Silicon + Intel），{macos} 及以上，不需要 Wine 或 Rosetta。
+
+> ⚠️ 玩家自制的非官方移植，与原作者潜艇伟伟迷无关。免费分享，请勿付费购买。
+
+### 安装
+
+1. 下载 `{asset}`，双击解压，把「{app_name}」拖进「应用程序」。
+2. 第一次打开前，在「终端」执行：
+   ```bash
+   xattr -cr {app}
+   ```
+3. 双击打开。打不开的话，执行 `codesign --force --deep -s - {app}` 后再试。
+
+存档迁移、Mod 目录、切换渲染器等说明见 [README](https://github.com/{repo}#存档mod-和设置)。
+
+### 说明
+
+- 这个版本是自动构建的：原作者发布 Windows 版 {dv} 后，自动下载并组装成 Mac 版。游戏资源（`.pck`）和游戏代码（`PlantsVsZombies.dll`）都直接取自官方 Windows 版，玩法内容没有改动；唯一的改动是 DLL 文件头里"仅限 x64"的标记，否则 M 系列芯片无法加载。
+- 发布前自动通过了 Linux 冒烟测试（同样方法组装，启动后运行 90 秒，.NET 初始化成功、无脚本错误）和 arm64 .NET 加载测试，**但没有在真实 Mac 上测试过**。遇到问题欢迎提 issue，附上在终端直接运行 `{app}/Contents/MacOS/{app_name}` 的输出。
+
+---
+
+Unofficial native macOS build of PvZ Hybrid {version} (Universal, macOS {major}+), built automatically from the official Windows release. Extract, move to `/Applications`, run `xattr -cr {app}`, then open. Game data and code are taken unmodified from the official Windows release, except for an AnyCPU PE-header patch on the DLL needed for arm64. Passed an automated Linux smoke test (90 s run, .NET initialized, no script errors) and an arm64 .NET load test; not tested on a real Mac. Please report issues.
+
+**SHA256** `{asset}`
+```
+{sha}
+```
+"""
+
+
+def check_origin(repo):
+    url = git("remote", "get-url", "origin")
+    if not re.search(rf"github\.com[:/]{re.escape(repo)}(\.git)?/?$", url):
+        raise RuntimeError(f"origin of {REPO_DIR} ({url}) is not {repo}")
+
+
+def gh_release(repo, tag):
+    """Release info ({isDraft, assets}) or None if it doesn't exist; raises on other errors (network, auth)."""
+    r = run(["gh", "release", "view", tag, "--repo", repo, "--json", "isDraft,assets"],
+            capture_output=True, text=True, check=False)
+    if r.returncode == 0:
+        return json.loads(r.stdout)
+    if "release not found" in r.stderr.lower():
+        return None
+    raise RuntimeError(f"gh release view {tag} failed ({r.returncode}): {r.stderr.strip()[-300:]}")
+
+
+def ensure_release(repo, version, pkg, sha, app_name):
+    """Create release v<version> with the package, or repair a leftover draft / incomplete upload."""
+    tag, asset, size = f"v{version}", asset_name(version), os.path.getsize(pkg)
+    rdir = f"{TMP}/github-release"
+    shutil.rmtree(rdir, ignore_errors=True)
+    os.makedirs(rdir)
+    a = f"{rdir}/{asset}"
+    try:
+        os.link(pkg, a)
+    except OSError:
+        shutil.copy(pkg, a)
+    open(f"{a}.sha256", "w").write(f"{sha}  {asset}\n")
+
+    def complete(rel):
+        got = {x["name"]: (x["size"], x.get("state")) for x in rel["assets"]}
+        return (not rel["isDraft"] and got.get(asset) == (size, "uploaded")
+                and got.get(f"{asset}.sha256", (0, ""))[1] == "uploaded")
+
+    rel = gh_release(repo, tag)
+    if rel and rel["isDraft"]:                            # left over by an interrupted upload
+        log(f"deleting leftover draft release {tag}")
+        sh(["gh", "release", "delete", tag, "--repo", repo, "--yes"])
+        rel = None
+    if rel is None:
+        open(f"{rdir}/notes.md", "w", encoding="utf-8").write(release_notes(repo, version, asset, sha, app_name))
+        sh(["gh", "release", "create", tag, "--repo", repo, "--target", "main",
+            "--title", f"植物大战僵尸杂交版 {display_version(version)} macOS（非官方移植）",
+            "--notes-file", f"{rdir}/notes.md", a, f"{a}.sha256"])
+        log(f"created GitHub release {tag} ({asset})")
+    elif not complete(rel):
+        log(f"GitHub release {tag} exists but its assets are incomplete; re-uploading")
+        sh(["gh", "release", "upload", tag, "--repo", repo, "--clobber", a, f"{a}.sha256"])
+    else:
+        log(f"GitHub release {tag} already exists with {asset}")
+    rel = gh_release(repo, tag)
+    if not rel or not complete(rel):
+        raise RuntimeError(f"release {tag} is still incomplete after upload: {rel and rel['assets']}")
+    shutil.rmtree(rdir, ignore_errors=True)
+
+
+def prepare_checkout():
+    """Bring the checkout to origin/main (fast-forward only) and make sure README.md can be committed."""
+    if run(["git", "-C", REPO_DIR, "symbolic-ref", "--short", "HEAD"], capture_output=True, text=True,
+           check=False).stdout.strip() != "main":
+        raise RuntimeError(f"{REPO_DIR} is not on branch main")
+    git("fetch", "-q", "origin", "main")
+    if git("rev-parse", "HEAD") != git("rev-parse", "origin/main"):
+        if run(["git", "-C", REPO_DIR, "merge-base", "--is-ancestor", "HEAD", "origin/main"],
+               check=False).returncode != 0:
+            raise RuntimeError(f"{REPO_DIR} has commits that are not on origin/main; push or drop them first "
+                               "(refusing to publish unreviewed commits)")
+        git("merge", "-q", "--ff-only", "origin/main")
+        log("fast-forwarded the checkout to origin/main")
+    if git("status", "--porcelain", "--", "README.md"):
+        raise RuntimeError("README.md has uncommitted changes")
+
+
+def bump_readme(version):
+    """Bump README.md to the released version and push it to origin/main."""
+    if not update_readme(version, asset_name(version)):
+        return
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+0000")
+    try:
+        git("commit", "-q", "--date", ts, "-m", f"Release {version}", "--", "README.md",
+            env=dict(ENV, TZ="UTC", GIT_COMMITTER_DATE=ts))
+    except Exception:
+        git("checkout", "-q", "--", "README.md")
+        raise
+    try:
+        git("push", "-q", "origin", "HEAD:main")
+    except Exception:
+        # undo only our commit (other staged changes stay staged); if the push did land, the next run fast-forwards
+        git("reset", "-q", "--soft", "HEAD~1")
+        git("checkout", "-q", "HEAD", "--", "README.md")
+        raise
+    log(f"pushed README update for {version}")
+
+
+def maybe_publish_github(st, repo, now):
+    """Publish the package last published to OUT as a GitHub release, unless already done (retried on later runs)."""
+    v = st.get("built_version")
+    if not v or st.get("github_version") == v:
+        return True
+    try:
+        check_origin(repo)
+        pkg = f"{OUT}/{PKG_NAME}"
+        if not os.path.exists(pkg):
+            raise RuntimeError(f"package for {v} not found: {pkg}")
+        sha = file_sha256(pkg)
+        if sha != st.get("sha256"):
+            raise RuntimeError(f"{pkg} does not match the sha256 recorded for {v}")
+        prepare_checkout()                              # refuse early, before anything is published
+        ensure_release(repo, v, pkg, sha, st.get("app_name", DEFAULT_APP_NAME))
+        bump_readme(v)
+        st.update(github_version=v, github_error=None, github_error_msg=None)
+        log(f"GitHub release v{v} is published in {repo}")
+        append_log(f"| {now} | {v} | ✅ 已发布到 GitHub（{repo}，v{v}） |")
+        return True
+    except Exception as e:
+        msg = f"{type(e).__name__}: {e}"
+        log(f"GitHub publish FAILED: {msg}")
+        if st.get("github_error_msg") != msg:            # don't repeat the same failure in UPDATE_LOG every day
+            append_log(f"| {now} | {v} | ❌ GitHub 发布失败：{oneline(msg, 300)}（之后每次运行会重试） |")
+        st.update(github_error=f"{now} {msg}", github_error_msg=msg)
+        return False
+    finally:
+        save_state(st)
+
+
+def oneline(text, limit):
+    """Flatten an error message so it fits in one Markdown table cell."""
+    return re.sub(r"\s+", " ", str(text)).replace("|", "/")[:limit]
+
+
 def append_log(line):
     p = f"{OUT}/UPDATE_LOG.md"
     new = not os.path.exists(p)
@@ -562,13 +791,22 @@ def append_log(line):
         f.write(line + "\n")
 
 
+def finish_github(st, a, now):
+    if not a.github_repo or a.no_publish:
+        return 0
+    return 0 if maybe_publish_github(st, a.github_repo, now) else 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--game-dir")
     ap.add_argument("--no-publish", action="store_true")
+    ap.add_argument("--github-repo", metavar="OWNER/NAME",
+                    help="also publish each newly built version as a release of this GitHub repo")
     a = ap.parse_args()
     os.makedirs(TMP, exist_ok=True)
+    os.makedirs(AU, exist_ok=True)
     lockf = open(f"{AU}/.lock", "w")
     try:
         fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -589,26 +827,28 @@ def main():
             if not a.force and st.get("built_version") == version:
                 log(f"up to date ({version}); nothing to do")
                 save_state(st)
-                return 0
+                return finish_github(st, a, now)
             if not a.force and st.get("built_version") and vtuple(version) < vtuple(st["built_version"]):
                 log(f"remote version {version} is older than built {st['built_version']}; skipping")
                 save_state(st)
-                return 0
+                return finish_github(st, a, now)
             archive = ensure_in_drive(sid, stoken, arc)
             game_dir = find_game_dir(extract(archive))
             info = preflight(game_dir)
         res = build(info, version, publish=not a.no_publish)
         if not a.no_publish:
-            st.update(built_version=version, built_at=now, sha256=res["sha256"], game_dir=game_dir, last_error=None)
+            st.update(built_version=version, built_at=now, sha256=res["sha256"], game_dir=game_dir, last_error=None,
+                      app_name=info["app_name"])
             append_log(f"| {now} | {version} | ✅ 已构建并发布，sha256 `{res['sha256'][:16]}…` |")
         save_state(st)
-        return 0
+        return 0 if a.no_publish else finish_github(st, a, now)
     except Exception as e:
         log(f"FAILED: {type(e).__name__}: {e}")
         st.update(last_error=f"{now} {type(e).__name__}: {e}")
         save_state(st)
         if not a.no_publish:
-            append_log(f"| {now} | {version or '?'} | ❌ 失败：{type(e).__name__}: {str(e)[:200]}（Mac 包未更新） |")
+            append_log(f"| {now} | {version or '?'} | ❌ 失败：{type(e).__name__}: {oneline(e, 200)}（Mac 包未更新） |")
+        finish_github(st, a, now)                        # still retry a pending GitHub publish of the last build
         return 1
 
 
