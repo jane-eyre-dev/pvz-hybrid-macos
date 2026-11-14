@@ -6,14 +6,14 @@
 > 原作：潜艇伟伟迷（B 站），官网 <https://www.pvzhe.com>。本移植免费分享，请勿付费购买；Mac 版的问题请不要去找原作者。
 > 《植物大战僵尸》是 PopCap / EA 的商标。
 
-当前版本：**0.32.0.0**。下载在 [Releases](../../releases/latest) 页面。原作者发布新版后，这里每天自动检查、构建并发布对应的 Mac 版。
+当前版本：**0.32.1.0**。下载在 [Releases](../../releases/latest) 页面。原作者发布新版后，这里每天自动检查、构建并发布对应的 Mac 版。
 
 - 支持 Apple Silicon（M1/M2/M3/M4…）和 Intel Mac，Universal（arm64 + x86_64），需要 macOS 12 (Monterey) 或更高版本（内置 .NET 9 runtime 的要求）
 - 原生运行，不需要 Wine、CrossOver、虚拟机或 Rosetta
 
 ## 安装
 
-1. 从 [Releases](../../releases) 下载 `PvZ-Hybrid-0.32-macOS-Universal.tar.gz`，双击解压，得到「植物大战僵尸杂交版」应用。
+1. 从 [Releases](../../releases) 下载 `PvZ-Hybrid-0.32.1-macOS-Universal.tar.gz`，双击解压，得到「植物大战僵尸杂交版」应用。
 2. 把它拖进「应用程序」文件夹。
 3. 第一次打开前，要解除 macOS 的"来自网络"隔离。这个版本没有 Apple 开发者签名，不处理的话系统会提示"已损坏"或"无法验证开发者"。
    打开「终端」，执行：
@@ -39,7 +39,7 @@ codesign --force --deep -s - /Applications/植物大战僵尸杂交版.app
 ### 校验文件（可选）
 
 ```bash
-shasum -a 256 ~/Downloads/PvZ-Hybrid-0.32-macOS-Universal.tar.gz
+shasum -a 256 ~/Downloads/PvZ-Hybrid-0.32.1-macOS-Universal.tar.gz
 ```
 
 结果应与 Release 页面上的 SHA256 一致。
@@ -114,11 +114,11 @@ shasum -a 256 ~/Downloads/PvZ-Hybrid-0.32-macOS-Universal.tar.gz
 > *Plants vs. Zombies Hybrid* (植物大战僵尸杂交版) is made by 潜艇伟伟迷 (bilibili), <https://www.pvzhe.com>. This port is free; do not pay for it, and please don't report Mac issues to the original author.
 > *Plants vs. Zombies* is a trademark of PopCap / EA.
 
-A native macOS build of PvZ Hybrid **0.32.0.0**: Universal (Apple Silicon + Intel), macOS 12 (Monterey) or later, no Wine, VM or Rosetta. Download from [Releases](../../releases/latest); new upstream versions are checked, built and released here automatically every day.
+A native macOS build of PvZ Hybrid **0.32.1.0**: Universal (Apple Silicon + Intel), macOS 12 (Monterey) or later, no Wine, VM or Rosetta. Download from [Releases](../../releases/latest); new upstream versions are checked, built and released here automatically every day.
 
 ### Install
 
-1. Download `PvZ-Hybrid-0.32-macOS-Universal.tar.gz`, double-click to extract, and move `植物大战僵尸杂交版.app` to `/Applications`.
+1. Download `PvZ-Hybrid-0.32.1-macOS-Universal.tar.gz`, double-click to extract, and move `植物大战僵尸杂交版.app` to `/Applications`.
 2. The app is ad-hoc signed but not notarized, so remove the quarantine flag before the first launch:
 
    ```bash
